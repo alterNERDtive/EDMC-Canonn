@@ -112,13 +112,13 @@ def plugin_stop():
 
 
 def plugin_app(parent):
-    this.parent = parent
+    this.parent = None
     # create a new frame as a containier for the status
     padx, pady = 10, 5  # formatting
     sticky = tk.EW + tk.N  # full width, stuck to the top
     anchor = tk.NW
 
-    frame = this.frame = tk.Frame(parent)
+    frame = this.frame = tk.Frame()
     frame.columnconfigure(0, weight=1)
 
     table = tk.Frame(frame)
@@ -135,7 +135,7 @@ def plugin_app(parent):
     whitelist = whiteList(parent)
     whitelist.fetchData()
 
-    return frame
+    return None
 
 
 def journal_entry(cmdr, is_beta, system, station, entry, state):
