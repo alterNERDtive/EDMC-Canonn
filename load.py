@@ -21,6 +21,7 @@ from canonn import news
 from canonn import nhss
 from canonn import patrol
 from canonn import release
+from canonn import extool
 from canonn.debug import Debug
 from canonn.debug import debug
 from canonn.systems import Systems
@@ -68,7 +69,7 @@ this.SysFactionState = None  # variable for state of controling faction
 this.SysFactionAllegiance = None  # variable for allegiance of controlling faction
 this.DistFromStarLS = None  # take distance to star
 
-this.version = "5.26.0"
+this.version = "6.0.0"
 
 this.client_version = "{}.{}".format(myPlugin, this.version)
 this.body_name = None
@@ -87,6 +88,7 @@ def plugin_prefs(parent, cmdr, is_beta):
     this.codexcontrol.plugin_prefs(frame, cmdr, is_beta, 3)
     hdreport.HDInspector(frame, cmdr, is_beta, this.client_version, 4)
     Debug.plugin_prefs(frame, this.client_version, 5)
+    this.extool.plugin_prefs(frame, cmdr, is_beta, 7)
     return frame
 
 
@@ -118,6 +120,7 @@ def plugin_start(plugin_dir):
     codex.CodexTypes.plugin_start(plugin_dir)
     journaldata.plugin_start(plugin_dir)
     capture.plugin_start(plugin_dir)
+    extool.BearingDestination.plugin_start(plugin_dir)
 
     return 'Canonn'
 
@@ -126,7 +129,7 @@ def plugin_stop():
     """
     EDMC is closing
     """
-    debug("Stopping the plugin")
+    Debug.logger.debug("Stopping the plugin")
     this.patrol.plugin_stop()
 
 
@@ -147,9 +150,10 @@ def plugin_app(parent):
     this.news = news.CanonnNews(table, 0)
     this.release = release.Release(table, this.version, 1)
     this.codexcontrol = codex.CodexTypes(table, 2)
-    this.patrol = patrol.CanonnPatrol(table, 3)
-    this.hyperdiction = hdreport.hyperdictionDetector.setup(table, 4)
-    this.guestbook = guestBook.setup(table, 5)
+    this.extool = extool.BearingDestination(table, 3)
+    this.patrol = patrol.CanonnPatrol(table, 4)
+    this.hyperdiction = hdreport.hyperdictionDetector.setup(table, 5)
+    this.guestbook = guestBook.setup(table, 6)
 
     whitelist = whiteList(parent)
     whitelist.fetchData()
@@ -167,22 +171,23 @@ def journal_entry(cmdr, is_beta, system, station, entry, state):
     if "SystemFaction" in entry:
 
         SystemFaction = entry.get("SystemFaction")
-        debug(SystemFaction)
+        Debug.logger.debug(SystemFaction)
         try:
             this.SysFactionState = SystemFaction["FactionState"]
         except:
             this.SysFactionState = None
-        debug("SysFaction's state is" + str(this.SysFactionState))
+        Debug.logger.debug("SysFaction's state is" + str(this.SysFactionState))
 
     if "SystemAllegiance" in entry:
 
         SystemAllegiance = entry.get("SystemAllegiance")
-        debug(SystemAllegiance)
+        Debug.logger.debug(SystemAllegiance)
         try:
             this.SysFactionAllegiance = SystemAllegiance
         except:
             this.SysFactionAllegiance = None
-        debug("SysFaction's allegiance is" + str(this.SysFactionAllegiance))
+        Debug.logger.debug("SysFaction's allegiance is" +
+                           str(this.SysFactionAllegiance))
 
     if "DistFromStarLS" in entry:
         '''"DistFromStarLS":144.821411'''
@@ -190,7 +195,7 @@ def journal_entry(cmdr, is_beta, system, station, entry, state):
             this.DistFromStarLS = entry.get("DistFromStarLS")
         except:
             this.DistFromStarLS = None
-        debug("DistFromStarLS=" + str(this.DistFromStarLS))
+        Debug.logger.debug("DistFromStarLS=" + str(this.DistFromStarLS))
 
     if entry.get("event") == "FSDJump":
         Systems.storeSystem(system, entry.get("StarPos"))
@@ -222,12 +227,15 @@ def journal_entry(cmdr, is_beta, system, station, entry, state):
 def journal_entry_wrapper(cmdr, is_beta, system, SysFactionState, SysFactionAllegiance, DistFromStarLS, station, entry,
                           state, x, y, z, body,
                           lat, lon, client):
+    canonn.debug.inject(cmdr, is_beta, system, station, entry,
+                        client, journal_entry_wrapper, this.frame)
     factionkill.submit(cmdr, is_beta, system, station, entry, client)
     nhss.submit(cmdr, is_beta, system, station, entry, client)
     hdreport.submit(cmdr, is_beta, system, station, entry, client)
-    codex.submit(cmdr, is_beta, system, x, y, z, entry, body, lat, lon, client)
+    codex.submit(cmdr, is_beta, system, x, y, z,
+                 entry, body, lat, lon, client, state)
     fssreports.submit(cmdr, is_beta, system, x, y, z,
-                      entry, body, lat, lon, client)
+                      entry, body, lat, lon, client, state)
     journaldata.submit(cmdr, is_beta, system, station,
                        entry, client, body, lat, lon)
     clientreport.submit(cmdr, is_beta, client, entry)
@@ -242,9 +250,12 @@ def journal_entry_wrapper(cmdr, is_beta, system, SysFactionState, SysFactionAlle
                           lon, client)
     codex.saaScan.journal_entry(
         cmdr, is_beta, system, station, entry, state, x, y, z, body, lat, lon, client)
+    codex.organicScan.journal_entry(
+        cmdr, is_beta, system, station, entry, state, x, y, z, body, lat, lon, client)
     capture.journal_entry(cmdr, is_beta, system, SysFactionState, SysFactionAllegiance, DistFromStarLS, station, entry,
                           state, x, y, z, body,
                           lat, lon, client)
+    extool.journal_entry(cmdr, is_beta, system, entry, client)
     guestBook.journal_entry(entry)
 
 
@@ -268,12 +279,25 @@ def dashboard_entry(cmdr, is_beta, entry):
     else:
         this.body_name = None
 
+    if entry.get("PlanetRadius"):
+        this.planet_radius = entry.get("PlanetRadius")
+    else:
+        this.planet_radius = None
+
+    return dashboard_entry_wrapper(cmdr, is_beta, this.body_name, this.planet_radius, this.nearloc['Latitude'], this.nearloc['Longitude'], entry)
+
+
+def dashboard_entry_wrapper(cmdr, is_beta, body, radius, lat, lon, entry, ):
+
+    #this.codexcontrol.updatePlanetData(cmdr, is_beta, body, lat, lon)
+    extool.updatePosition(body, radius, lat, lon, entry.get("Heading"))
+
 
 def cmdr_data(data, is_beta):
     """
     We have new data on our commander
     """
-    # debug(json.dumps(data,indent=4))
+    # Debug.logger.debug(json.dumps(data,indent=4))
     this.patrol.cmdr_data(data, is_beta)
 
 
@@ -304,7 +328,7 @@ class capture():
                 site_index = None
 
             # fetch status.json
-            journal_dir = config.get(
+            journal_dir = config.get_str(
                 'journaldir') or config.default_journal_dir
             with open(os.path.join(os.path.expanduser(journal_dir), 'status.json')) as json_file:
                 status = json.load(json_file)
@@ -314,7 +338,7 @@ class capture():
             else:
                 comment = " ".join(message_part[2:])
 
-            debug(status)
+            Debug.logger.debug(status)
 
             canonn.emitter.post("https://us-central1-canonn-api-236217.cloudfunctions.net/postStatus",
                                 {
