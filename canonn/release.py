@@ -28,9 +28,11 @@ from canonn.debug import Debug
 from canonn.debug import debug, error
 from canonn.player import Player
 from config import config
+import datetime
 
 
 from ttkHyperlinkLabel import HyperlinkLabel
+
 
 RELEASE_CYCLE = 60 * 1000 * 60  # 1 Hour
 DEFAULT_URL = 'https://github.com/canonn-science/EDMC-Canonn/releases'
@@ -60,12 +62,22 @@ class ReleaseLink(HyperlinkLabel):
             wraplength=50,  # updated in __configure_event below
             anchor=tk.NW
         )
+        self.resized = False
+        self.lasttime=datetime.datetime.now()
         self.bind('<Configure>', self.__configure_event)
 
     def __configure_event(self, event):
         "Handle resizing."
 
-        self.configure(wraplength=event.width)
+        difference=datetime.datetime.now() - self.lasttime
+        
+        if difference.total_seconds() > 0.5:
+            self.resized = False
+
+        if not self.resized:
+            Debug.logger.debug("Release widget resize")
+            self.resized = True
+            self.configure(wraplength=event.width-2)
 
 
 class ReleaseThread(threading.Thread):
@@ -121,6 +133,7 @@ class Release(Frame):
         # self.hyperlink.bind('<Configure>', self.hyperlink.configure_event)
         self.bind('<<ReleaseUpdate>>', self.release_update)
 
+
         Debug.logger.debug(config.get_str('Canonn:RemoveBackup'))
 
         self.update(None)
@@ -130,17 +143,16 @@ class Release(Frame):
             Debug.logger.debug('Canonn:RemoveBackup {}'.format(delete_dir))
             try:
                 shutil.rmtree(delete_dir)
-
             except:
                 Debug.logger.error("Cant delete {}".format(delete_dir))
 
             # lets not keep trying
-            config.set('Canonn:RemoveBackup', "None")
+            config.set('Canonn_RemoveBackup', "None")
 
     def update(self, event):
         self.release_thread()
         # check again in an hour
-        #debug("checking for the next release in one hour")
+        #Debug.logger.debug("checking for the next release in one hour")
         #self.after(RELEASE_CYCLE, self.update)
 
     def version2number(self, version):
@@ -299,7 +311,7 @@ class Release(Frame):
             return False
 
         if self.rmbackup.get() == 1:
-            config.set('Canonn:RemoveBackup',
+            config.set('Canonn_RemoveBackup',
                        "{}.disabled".format(Release.plugin_dir))
 
         Debug.logger.debug("Upgrade complete")

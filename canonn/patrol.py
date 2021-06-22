@@ -218,19 +218,23 @@ class InfoLink(HyperlinkLabel):
             anchor=tk.NW
         )
         self.resized = False
+        self.lasttime=datetime.datetime.now()
         self.bind('<Configure>', self.__configure_event)
 
-    def __reset(self):
-        self.resized = False
 
     def __configure_event(self, event):
         """Handle resizing."""
 
+        difference=datetime.datetime.now() - self.lasttime
+        Debug.logger.debug("diff {}".format(difference.total_seconds()))   
+        if difference.total_seconds() > 0.5:
+            self.resized = False
+
         if not self.resized:
-            Debug.logger.debug("Patrol: Info widget resize")
+            Debug.logger.debug("Patrol widget resize")
             self.resized = True
-            self.configure(wraplength=event.width)
-            self.after(1000, self.__reset)
+            self.configure(wraplength=event.width-2)
+            self.lasttime=datetime.datetime.now()
 
 
 class CanonnPatrol(Frame):
@@ -299,12 +303,12 @@ class CanonnPatrol(Frame):
         # self.submit=tk.Button(self, text="Open")
         self.next = tk.Button(
             self, text="Next", image=self.IMG_NEXT, width=14, height=14, borderwidth=0)
-        self.prev.grid(row=0, column=1, sticky="W")
 
         # self.submit.grid(row = 2, column = 1,sticky="NSW")
+        self.prev.grid(row=0, column=1, sticky="W")
         self.next.grid(row=0, column=4, sticky="E")
-        self.next.bind('<Button-1>', self.patrol_next)
         self.prev.bind('<Button-1>', self.patrol_prev)
+        self.next.bind('<Button-1>', self.patrol_next)
 
         self.prev.grid_remove()
         self.next.grid_remove()

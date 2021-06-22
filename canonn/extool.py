@@ -17,9 +17,13 @@ import os
 import plug
 import requests
 import sys
+import re
 import threading
 import time
 import myNotebook as nb
+import queue as Q
+
+from threading import Thread
 from ttkHyperlinkLabel import HyperlinkLabel
 
 from canonn.debug import Debug
@@ -27,7 +31,188 @@ from canonn.debug import debug, error
 from canonn.systems import Systems
 from config import config
 
+class extoolTypes():
+    system = None
+    system64 = None
+    syscoords = None
+    body = None
+    body_drop = None
+    radius = None
+    landingpad = None
+    nearloc = None
+    neardest = None
+    
+    def __init__(self):
+        self.session = requests.Session()
+        self.queue = Q.Queue()
+        self.thread = Thread(target = self.worker, name = 'ExTool worker')
+        self.thread.daemon = True
+        self.thread.start()
+    
+    @classmethod
+    def plugin_start(self, plugin_dir):
+        self.plugin_dir = plugin_dir
+        
+    def plugin_stop(self):
+        self.queue.put(None)
+        self.thread.join()
+        self.thread = None
+        #print "Farewell cruel world!"
+    
+    def updateStatus(self, body, radius, nearloc):
+        self.body = body
+        self.radius = radius
+        self.nearloc = nearloc
+    
+    # Worker thread
+    def worker(self):
+        url = "https://elite.laulhere.com/ExTool/send_data"
+        while True:
+            item = self.queue.get()
+            if not item:
+                return	# Closing
+            else:
+                (mode, data, callback) = item
+            
+            if(mode=='senddata'):
 
+                retrying = 0
+                while retrying < 3:
+                    try:
+                        reply = None
+                        #print("SEND EXTOOL", mode, data)
+                        r = self.session.post(url, json=data, timeout=20)
+                        #print("TEXT EXTOOL", r.text)
+                        r.raise_for_status()
+                        reply = r.json()
+                        (code, msg) = reply['Status'], reply['StatusMsg']
+                        #print("REPLY EXTOOL", reply)
+                        
+                        if (code // 100 != 1):	# 1xx = OK, 2xx = WARNING, 3xx 4xx 5xx = fatal error
+                            if (code // 100 == 2):
+                                Debug.logger.debug(('Warning: ExTool {MSG}').format(MSG=msg))
+                            else:
+                                Debug.logger.error(('Error: ExTool {MSG}').format(MSG=msg))
+                        #else:
+                        #    Debug.logger.debug(('ExTool {MSG}').format(MSG=msg))
+                        
+                        if callback:
+                            callback(reply)
+                        break
+                   
+                    except:
+                        print("SEND EXTOOL", mode, data)
+                        print("TEXT EXTOOL", r.text)
+                        print("REPLY EXTOOL", reply)
+                        retrying += 1
+                else:
+                    Debug.logger.error(("Error: Can't connect to ExTool Server"))
+
+          
+            #elif(mode=='playsound'):
+            #    try:
+            #        PlaySound(data, SND_FILENAME)
+            #    except:
+            #        plug.show_error(_("Error: Can't play sound for ExTool"))
+    
+    def call(self, cmdr, sendmode, args, callback=None):
+        #args = json.loads(args)
+        args['cmdr'] = cmdr
+        args['mode'] = sendmode
+        args['version'] = self.version
+        args['apikey'] = ""
+        self.queue.put(('senddata', args, callback))
+        
+    def send_data(self, cmdr, event, timestamp, rawentry):
+        payload = {
+            'system' : self.system,
+            'system64' : self.system64,
+            'coords' : self.syscoords,
+            'body' : self.body,
+            'bodydrop' : self.body_drop,
+            'radius' : self.radius,
+            'landingpad' : self.landingpad,
+            'nearloc' : self.nearloc,
+            'rawentry' : rawentry,
+            'timestamp' : time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(timestamp))
+        }
+        self.call(cmdr, event, payload)
+        
+    
+    def journal_entry(self, cmdr, is_beta, system, station, entry, state, client):
+        
+        self.version = client
+        if is_beta or not state.get("Odyssey"):
+            return
+        
+        timestamp = time.mktime(time.strptime(entry.get('timestamp'), '%Y-%m-%dT%H:%M:%SZ'))
+        
+        if entry.get("event") in ("Location", "StartUp", "FSDJump", "CarrierJump"):
+            self.system64 = entry.get("SystemAddress")
+            self.system = entry.get("StarSystem")
+            self.syscoords = entry.get("StarPos")
+            self.landingpad = None
+            self.body_drop = None
+            self.send_data(cmdr, entry.get("event"), timestamp, entry)
+        
+        if entry.get("event") in ("Location", "StartUp"):
+            if "Body" in entry:
+                self.body_drop = entry['Body']
+        
+        if entry.get("event") in ("DockingGranted"):
+            self.landingpad = entry.get("LandingPad")
+        if entry.get("event") in ("SupercruiseEntry"):
+            self.landingpad = None
+            self.body_drop = None
+        if entry.get("event") in ("SupercruiseExit"):
+            if "Body" in entry:
+                self.body_drop = entry['Body']
+        if entry.get("event") in ("StartJump"):
+            if entry.get("JumpType") in ("Hyperspace"):
+                self.body_drop = None
+        
+        if entry.get("event") in ("SellOrganicData", "MissionAccepted"):
+            # no need system or body
+            self.send_data(cmdr, entry.get("event"), timestamp, entry)
+            
+        if entry.get("event") in ("Touchdown", "Liftoff"):
+            # everything is in the entry (system and body)
+            self.send_data(cmdr, entry.get("event"), timestamp, entry)
+        
+        if entry.get("event") in ("Disembark", "Embark"):
+            if entry.get("Taxi") == True and entry.get("OnPlanet") == True:
+                self.send_data(cmdr, entry.get("event"), timestamp, entry)
+            
+        if entry.get("event") in ("Docked"):
+            if entry.get("StationType") != "FleetCarrier":
+                self.send_data(cmdr, entry.get("event"), timestamp, entry)
+            
+        if entry.get("event") in ("CodexEntry", "DatalinkScan", "DatalinkVoucher", "DataScanned", "CollectCargo", "MaterialCollected"):
+            # space or planet
+            # missing body : CodexEntry
+            # missing body, lat & lon : Docked
+            # missing system, body, lat & lon : DatalinkScan, DatalinkVoucher, DataScanned, MaterialCollected, CollectCargo
+            if entry.get("EntryID") is not None:
+                if entry.get("EntryID")==2330403 and entry.get("Name")=="$Codex_Ent_Cactoid_03_A_Name;":
+                    entry["Name"]="$Codex_Ent_Cactoid_04_A_Name;"
+            self.send_data(cmdr, entry.get("event"), timestamp, entry)
+            
+        if entry.get("event") in ("FSSSignalDiscovered"):
+            FleetCarrier = False
+            if entry.get("IsStation"):
+                prog = re.compile("^.* [A-Z0-9][A-Z0-9][A-Z0-9]-[A-Z0-9][A-Z0-9][A-Z0-9]$")
+                FleetCarrier = prog.match(entry.get("SignalName"))
+                prog = re.compile("^.*[a-z].*$")
+                FleetCarrier = FleetCarrier and not prog.match(entry.get("SignalName"))
+            if not FleetCarrier:
+                # space only
+                self.send_data(cmdr, entry.get("event"), timestamp, entry)
+            
+        if entry.get("event") in ("ApproachSettlement", "SAASignalsFound", "SAAScanComplete", "ScanOrganic", "BackpackChange"):
+            # planet only
+            # missing system, body, lat & lon : BackpackChange
+            self.send_data(cmdr, entry.get("event"), timestamp, entry)
+        
 class BearingDestination():
     state = 0
     system = None
@@ -39,9 +224,9 @@ class BearingDestination():
     target_lon = None
 
     def __init__(self, parent, gridrow):
-        self.frame = tk.Frame(parent)
+        self.frame = Frame(parent)
         self.frame.grid(row=gridrow)
-        self.container = tk.Frame(self.frame)
+        self.container = Frame(self.frame)
         self.container.columnconfigure(1, weight=1)
         self.container.grid(row=1)
         self.bearing_cancel = tk.Label(self.container)
@@ -94,8 +279,7 @@ class BearingDestination():
                 self.state = 0
                 self.hide()
             self.setTargetLatLon(lat, lon)
-            self.calculateBearing(self.body, self.radius,
-                                  self.latitude, self.longitude)
+            self.calculateBearing(self.body, self.radius, self.latitude, self.longitude)
 
     def eventDeactivate(self, event):
         lat = None
@@ -107,8 +291,7 @@ class BearingDestination():
     def ActivateTarget(self, lat, lon):
         self.setTargetLatLon(lat, lon)
         self.state = 1
-        self.calculateBearing(self.body, self.radius,
-                              self.latitude, self.longitude)
+        self.calculateBearing(self.body, self.radius, self.latitude, self.longitude)
 
     def setTargetLatLon(self, lat, lon):
         if (lat is not None) or (lon is not None):
@@ -224,3 +407,4 @@ def calc_bearing(phi_a, lambda_a, phi_b, lambda_b, radius):
         return brng
     else:
         return 0.0
+
